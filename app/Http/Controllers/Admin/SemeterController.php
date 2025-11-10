@@ -11,8 +11,7 @@ use App\Services\Modules\MBlock\Block;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use App\Models\Campus;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Redis;
+use App\Services\Redis\RedisService;
 class SemeterController extends Controller
 {
     use TUploadImage, TResponse;
@@ -58,15 +57,14 @@ class SemeterController extends Controller
         $step = 200;      // mỗi lần đợi 200ms
         $waited = 0;
 
-        if (Cache::has($cacheKey)) {
-            $data = Cache::get($cacheKey);
+        $redisService = new RedisService();
+
+        $data = $redisService->get($cacheKey);
+        if ($data) {
             return $this->responseApi(true, $data);
         }
-
-        $lockAcquired = Redis::set($lockKey, 1, 'NX', 'EX', $lockTTL);
-        
-        if ($lockAcquired) {
-            
+        // Thử tạo lock
+        if ($redisService->lock($lockKey, 5)) {
             try {
                 $data = $this->semeter->GetSemeterAPI($codeCampus);
 
@@ -74,33 +72,26 @@ class SemeterController extends Controller
                     return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
                 }
 
-                Cache::put($cacheKey, $data, $cacheTTL);
+                $redisService->set($cacheKey, $data, $cacheTTL);
 
-                return $this->responseApi(true, $data);
-
-            } catch (\Exception $e) {
-                return $this->responseApi(false, ['error' => $e->getMessage()]);
             } finally {
-                Redis::del($lockKey);
+                $redisService->unlock($lockKey);
             }
 
-        } else {
-            while ($waited < $maxWait) {
-                usleep($step * 1000); // đợi 200ms
-                $waited += $step;
-
-                if (Cache::has($cacheKey)) {
-                    $data = Cache::get($cacheKey);
-                    return $this->responseApi(true, $data);
-                }
-            }
-
-            if ($retry < 1) {
-                return $this->indexApiRedis($codeCampus, $retry + 1);
-            }
-
-            return $this->responseApi(false, ['message' => 'Hệ thống đang bận, vui lòng thử lại']);
+            return $this->responseApi(true, $data);
         }
+
+        while ($waited < $maxWait) {
+            usleep($step * 1000);
+            $waited += $step;
+
+            $data = $redisService->get($cacheKey);
+            if ($data) {
+                return $this->responseApi(true, $data);
+            }
+        }
+
+        return $this->responseApi(false, ['message' => 'Hệ thống đang bận, vui lòng thử lại']);
     }
 
     public function edit($id){
