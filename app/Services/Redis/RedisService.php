@@ -15,7 +15,7 @@ class RedisService
      */
     public function reset(string $key)
     {
-        Cache::forget($key);
+        Cache::forget($key);    
         Redis::del($key . '_lock');
     }
 
