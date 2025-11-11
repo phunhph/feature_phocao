@@ -44,7 +44,6 @@ class SemeterController extends Controller
     {
         return $this->lockPrefixClient . $codeCampus;
     }
-
     /**
      * Danh sách kỳ học (hiển thị giao diện)
      */
@@ -84,20 +83,18 @@ class SemeterController extends Controller
             }
         }
 
-        // 4. Xử lý dữ liệu cho view
-        $semesterIds = collect($semesters)->pluck('id')->toArray();
-        $blockIds = $this->block->getAllIdBlockOne($semesterIds)->pluck('id', 'id_semeter');
-
+        //Tao mang
+        $ids=[];
+        foreach($semesters as $key=>$value){
+            $ids[]=$value->id;
+        }
+        $block_id= $this->block->getAllIdBlockOne($ids)->pluck('id', 'id_semeter');
         $campusListQuery = Campus::query();
-        if (!auth()->user()->hasRole('super admin')) {
+        if (!(auth()->user()->hasRole('super admin'))) {
             $campusListQuery->where('id', auth()->user()->campus_id);
         }
-
-        return view('pages.semeter.index', [
-            'setemer' => $semesters,
-            'campusList' => $campusListQuery->get(),
-            'id' => $blockIds,
-        ]);
+        $campusList = $campusListQuery->get();
+        return view('pages.semeter.index',['setemer' => $semesters,'campusList' => $campusList,'id'=>$block_id]);
     }
     /**
      * API danh sách kỳ học
