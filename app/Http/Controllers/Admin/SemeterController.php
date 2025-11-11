@@ -56,9 +56,6 @@ class SemeterController extends Controller
         // 1. Lấy cache trước
         if ($cached = $this->redis->get(key: $cacheKey)) {
             $semesters = $cached;
-        } else {
-            $semesters = $this->semeter->GetSemeter();
-            $this->redis->set($cacheKey, $semesters, $this->cacheTTL);
         }
 
         // 2. Cố gắng lock để tránh race condition
@@ -107,8 +104,40 @@ class SemeterController extends Controller
      */
     public function ListSemeter()
     {
-        $data = $this->semeter->GetSemeter();
-        return response()->json(['data' => $data], 200);
+        $cacheKey = $this->cachePrefixAdmin;
+        $lockKey = $this->lockPrefixAdmin;
+
+        // 1. Lấy cache trước
+        if ($cached = $this->redis->get(key: $cacheKey)) {
+            $semesters = $cached;
+        }
+
+        // 2. Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
+            try {
+                $semesters = $this->semeter->GetSemeter();
+
+                if (!$semesters) {
+                    return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
+                }
+
+                $this->redis->set($cacheKey, $semesters, $this->cacheTTL);
+            } finally {
+                $this->redis->unlock($lockKey);
+            }
+        } else {
+            // 3. Nếu lock không được, đợi cache được tạo
+            $waited = 0;
+            while ($waited < $this->maxWait) {
+                usleep($this->step * 1000);
+                $waited += $this->step;
+
+                if ($cached = $this->redis->get($cacheKey)) {
+                     $semesters = $cached;
+                }
+            }
+        }
+        return response()->json(['data' => $semesters], 200);
     }
 
     public function indexApi(string $codeCampus)
@@ -215,7 +244,9 @@ class SemeterController extends Controller
 
         DB::table('block_semeter')->insert($blocks);
         
+        // reset cache
         $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
 
         return response()->json([
             'message' => 'Thêm thành công',
@@ -258,6 +289,7 @@ class SemeterController extends Controller
 
         }
         $semeter = $this->semeter->getItemSemeter($id);
+        $this->redis->reset($this->cachePrefixClient);
         if (!$semeter) {
             return response()->json(['message' => 'Không tìm thấy'], 404);
         }
@@ -276,6 +308,7 @@ class SemeterController extends Controller
 
         // reset cache
         $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
 
         return response( ['message' => "Cập nhật thành công",'data' => $data],200);
     }
@@ -289,14 +322,20 @@ class SemeterController extends Controller
         $campus->save();
         $data = $request->all();
         $data['id'] = $id;
+        // reset cache
         $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
+
         return response( ['message' => "Cập nhật trạng thái thành công",'data' =>$data],200);
     }
     public function delete($id)
     {
         try {
             $this->semeter->getItemSemeter($id)->delete();
+            // reset cache
             $this->redis->reset($this->cachePrefixAdmin);
+            $this->redis->reset($this->cachePrefixClient);
+
             return response( ['message' => "Xóa Thành công"],200);
         } catch (\Throwable $th) {
             return response( ['message' => "Xóa Thất bại"],404);
