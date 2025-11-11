@@ -3,68 +3,163 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Campus;
+use App\Services\Modules\MBlock\Block;
+use App\Services\Modules\MSemeter\Semeter;
+use App\Services\Redis\RedisService;
 use App\Services\Traits\TResponse;
 use App\Services\Traits\TUploadImage;
 use Illuminate\Http\Request;
-use App\Services\Modules\MSemeter\Semeter;
-use App\Services\Modules\MBlock\Block;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use App\Models\Campus;
-use App\Services\Redis\RedisService;
+
 class SemeterController extends Controller
 {
     use TUploadImage, TResponse;
+
+    private RedisService $redis;
+
+    private int $cacheTTL = 86400;   // 24h
+    private int $lockTTL = 5;        // 5s
+    private int $maxWait = 3000;     // 3s
+    private int $step = 200;         // 0.2s
+    private string $cachePrefixAdmin = 'semeter_cache:admin:';
+    private string $lockPrefixAdmin = 'semeter_lock:admin:';
+    private string $cachePrefixClient = 'semeter_cache:client:';
+    private string $lockPrefixClient = 'semeter_lock:client:';
+
     public function __construct(
         private Semeter $semeter,
         private Block $block
-    )
-    {
+    ) {
+        $this->redis = new RedisService();
     }
 
-    public function index(){
-        $data = $this->semeter->GetSemeter();
+    private function getCacheKey(string $codeCampus): string
+    {
+        return $this->cachePrefixClient . $codeCampus;
+    }
 
-        //Tao mang
-        $ids=[];
-        foreach($data as $key=>$value){
-            $ids[]=$value->id;
+    private function getLockKey(string $codeCampus): string
+    {
+        return $this->lockPrefixClient . $codeCampus;
+    }
+
+    /**
+     * Danh sách kỳ học (hiển thị giao diện)
+     */
+    public function index()
+    {
+        $cacheKey = $this->cachePrefixAdmin;
+        $lockKey = $this->lockPrefixAdmin;
+
+        // 1. Lấy cache trước
+        if ($cached = $this->redis->get(key: $cacheKey)) {
+            $semesters = $cached;
         }
-        $block_id= $this->block->getAllIdBlockOne($ids)->pluck('id', 'id_semeter');
+
+        // 2. Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
+            try {
+                $semesters = $this->semeter->GetSemeter();
+
+                if (!$semesters) {
+                    return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
+                }
+
+                $this->redis->set($cacheKey, $semesters, $this->cacheTTL);
+            } finally {
+                $this->redis->unlock($lockKey);
+            }
+        } else {
+            // 3. Nếu lock không được, đợi cache được tạo
+            $waited = 0;
+            while ($waited < $this->maxWait) {
+                usleep($this->step * 1000);
+                $waited += $this->step;
+
+                if ($cached = $this->redis->get($cacheKey)) {
+                     $semesters = $cached;
+                }
+            }
+        }
+
+        // 4. Xử lý dữ liệu cho view
+        $semesterIds = collect($semesters)->pluck('id')->toArray();
+        $blockIds = $this->block->getAllIdBlockOne($semesterIds)->pluck('id', 'id_semeter');
+
         $campusListQuery = Campus::query();
-        if (!(auth()->user()->hasRole('super admin'))) {
+        if (!auth()->user()->hasRole('super admin')) {
             $campusListQuery->where('id', auth()->user()->campus_id);
         }
-        $campusList = $campusListQuery->get();
-        return view('pages.semeter.index',['setemer' => $data,'campusList' => $campusList,'id'=>$block_id]);
-    }
 
-    public function ListSemeter($id_semeter){
-        $data = $this->semeter->GetSemeter();
-        return response()->json(['data' => $data], 200);
+        return view('pages.semeter.index', [
+            'setemer' => $semesters,
+            'campusList' => $campusListQuery->get(),
+            'id' => $blockIds,
+        ]);
     }
-    public function indexApi($codeCampus){
-                if (!($data = $this->semeter->GetSemeterAPI($codeCampus)))  return $this->responseApi(false);      
-                        return $this->responseApi(true, $data);
-    }
-    public function indexApiRedis($codeCampus, $retry = 0)
+    /**
+     * API danh sách kỳ học
+     */
+    public function ListSemeter()
     {
-        $cacheKey = "semeter_cache:{$codeCampus}";
-        $lockKey = "semeter_lock:{$codeCampus}";
-        $cacheTTL = 86400; // 24 giờ
-        $lockTTL = 5;     // lock Redis 5 giây
-        $maxWait = 3000;  // tối đa đợi 3 giây
-        $step = 200;      // mỗi lần đợi 200ms
-        $waited = 0;
+        $cacheKey = $this->cachePrefixAdmin;
+        $lockKey = $this->lockPrefixAdmin;
 
-        $redisService = new RedisService();
-
-        $data = $redisService->get($cacheKey);
-        if ($data) {
-            return $this->responseApi(true, $data);
+        // 1. Lấy cache trước
+        if ($cached = $this->redis->get(key: $cacheKey)) {
+            $semesters = $cached;
         }
-        // Thử tạo lock
-        if ($redisService->lock($lockKey, 5)) {
+
+        // 2. Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
+            try {
+                $semesters = $this->semeter->GetSemeter();
+
+                if (!$semesters) {
+                    return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
+                }
+
+                $this->redis->set($cacheKey, $semesters, $this->cacheTTL);
+            } finally {
+                $this->redis->unlock($lockKey);
+            }
+        } else {
+            // 3. Nếu lock không được, đợi cache được tạo
+            $waited = 0;
+            while ($waited < $this->maxWait) {
+                usleep($this->step * 1000);
+                $waited += $this->step;
+
+                if ($cached = $this->redis->get($cacheKey)) {
+                     $semesters = $cached;
+                }
+            }
+        }
+        return response()->json(['data' => $semesters], 200);
+    }
+
+    public function indexApi(string $codeCampus)
+    {
+        $data = $this->semeter->GetSemeterAPI($codeCampus);
+        return $this->responseApi((bool) $data, $data);
+    }
+
+    /**
+     * API với Redis cache
+     */
+    public function indexApiRedis(string $codeCampus)
+    {
+        $cacheKey = $this->getCacheKey($codeCampus);
+        $lockKey = $this->getLockKey($codeCampus);
+
+        if ($cached = $this->redis->get($cacheKey)) {
+            return $this->responseApi(true, $cached);
+        }
+
+        // Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
             try {
                 $data = $this->semeter->GetSemeterAPI($codeCampus);
 
@@ -72,75 +167,63 @@ class SemeterController extends Controller
                     return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
                 }
 
-                $redisService->set($cacheKey, $data, $cacheTTL);
-
+                $this->redis->set($cacheKey, $data, $this->cacheTTL);
             } finally {
-                $redisService->unlock($lockKey);
+                $this->redis->unlock($lockKey);
             }
 
             return $this->responseApi(true, $data);
         }
 
-        while ($waited < $maxWait) {
-            usleep($step * 1000);
-            $waited += $step;
+        // Đợi cache nếu có tiến trình khác đang tạo
+        $waited = 0;
+        while ($waited < $this->maxWait) {
+            usleep($this->step * 1000);
+            $waited += $this->step;
 
-            $data = $redisService->get($cacheKey);
-            if ($data) {
-                return $this->responseApi(true, $data);
+            if ($cached = $this->redis->get($cacheKey)) {
+                return $this->responseApi(true, $cached);
             }
         }
 
         return $this->responseApi(false, ['message' => 'Hệ thống đang bận, vui lòng thử lại']);
     }
 
-    public function edit($id){
-        try{
-            $subject = $this->semeter->getItemSemeter($id);
-            return response()->json([
-                'message' => "Thành công",
-                'data' => $subject,
-            ],200);
-        }catch (\Throwable $th){
-            return response( ['message' => "Thêm thất bại"],404);
+    public function edit(int $id)
+    {
+        try {
+            $data = $this->semeter->getItemSemeter($id);
+            return response()->json(['message' => 'Thành công', 'data' => $data]);
+        } catch (\Throwable) {
+            return response()->json(['message' => 'Thất bại'], 404);
         }
     }
-    public function create(Request $request){
-        $validator =  Validator::make(
+
+    public function create(Request $request)
+    {
+        $validator = Validator::make(
             $request->all(),
             [
                 'namebasis' => 'required|min:3|unique:semester,name',
                 'campus_id' => 'required',
                 'status' => 'required',
-                'start_time_semeter' => 'nullable',
-                'end_time_semeter' => 'nullable|date|after:start_time_semeter'
+                'start_time_semeter' => 'nullable|date',
+                'end_time_semeter' => 'nullable|date|after:start_time_semeter',
             ],
             [
                 'namebasis.unique' => 'Tên kỳ học đã tồn tại',
-                'namebasis.required' => 'Không để trống tên Môn !',
+                'namebasis.required' => 'Không để trống tên kỳ học!',
                 'campus_id.required' => 'Vui lòng chọn cơ sở',
-                'namebasis.min' => 'Tối thiếu 3 ký tự',
+                'namebasis.min' => 'Tối thiểu 3 ký tự',
                 'status.required' => 'Vui lòng chọn trạng thái',
-                'start_time_semeter.nullable' => 'Vui lòng chọn thời gian bắt đầu',
-                'end_time_semeter.nullable' => 'Vui lòng chọn thời gian kết thúc',
                 'end_time_semeter.after' => 'Thời gian kết thúc phải lớn hơn thời gian bắt đầu',
             ]
         );
 
-        if($validator->fails() == 1){
-            $errors = $validator->errors();
-            $fields = ['namebasis','campus_id','status','start_time_semeter','end_time_semeter'];
-            foreach ($fields as $field) {
-                $fieldErrors = $errors->get($field);
-
-                if ($fieldErrors) {
-                    foreach ($fieldErrors as $error) {
-                        return response($error,404);
-                    }
-                }
-            }
-
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()->first()], 422);
         }
+
         $data = [
             'name' => $request->namebasis,
             'id_campus' => $request->campus_id,
@@ -148,23 +231,27 @@ class SemeterController extends Controller
             'start_time' => $request->start_time_semeter,
             'end_time' => $request->end_time_semeter,
             'created_at' => now(),
-            'updated_at' => NULL
+            'updated_at' => null,
         ];
-
 
         DB::table('semester')->insert($data);
         $id = DB::getPdo()->lastInsertId();
-        $Blocks = [];
-        for ($i = 0; $i < 2;$i++){
-            $Blocks[] = [
-                'name' => 'Block ' .$i+1,
-                'id_semeter' => $id,
-            ];
-        }
-        DB::table('block_semeter')->insert($Blocks);
-        $data = $request->all();
-        $data['id'] = $id;
-        return response( ['message' => "Thêm thành công",'data' =>$data],200);
+
+        $blocks = collect(range(1, 2))->map(fn($i) => [
+            'name' => "Block {$i}",
+            'id_semeter' => $id,
+        ])->toArray();
+
+        DB::table('block_semeter')->insert($blocks);
+        
+        // reset cache
+        $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
+
+        return response()->json([
+            'message' => 'Thêm thành công',
+            'data' => array_merge($data, ['id' => $id]),
+        ], 200);
     }
     public function update(Request $request,$id){
         $validator =  Validator::make(
@@ -186,6 +273,7 @@ class SemeterController extends Controller
                 'end_time_semeter.after' => 'Thời gian kết thúc phải lớn hơn thời gian bắt đầu',
             ]
         );
+
         if($validator->fails() == 1){
             $errors = $validator->errors();
             $fields = ['namebasis','campus_id_update','status','start_time_semeter','end_time_semeter'];
@@ -201,6 +289,7 @@ class SemeterController extends Controller
 
         }
         $semeter = $this->semeter->getItemSemeter($id);
+        $this->redis->reset($this->cachePrefixClient);
         if (!$semeter) {
             return response()->json(['message' => 'Không tìm thấy'], 404);
         }
@@ -216,6 +305,11 @@ class SemeterController extends Controller
         $data['end_time_semeter'] =  $this->formatdate($data['end_time_semeter']);
         $data['start_time_semeter'] =   $this->formatdate($data['start_time_semeter']);
         $data['id'] = $id;
+
+        // reset cache
+        $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
+
         return response( ['message' => "Cập nhật thành công",'data' => $data],200);
     }
     public function now_status(Request $request,$id){
@@ -228,11 +322,20 @@ class SemeterController extends Controller
         $campus->save();
         $data = $request->all();
         $data['id'] = $id;
+        // reset cache
+        $this->redis->reset($this->cachePrefixAdmin);
+        $this->redis->reset($this->cachePrefixClient);
+
         return response( ['message' => "Cập nhật trạng thái thành công",'data' =>$data],200);
     }
-    public function delete($id){
+    public function delete($id)
+    {
         try {
             $this->semeter->getItemSemeter($id)->delete();
+            // reset cache
+            $this->redis->reset($this->cachePrefixAdmin);
+            $this->redis->reset($this->cachePrefixClient);
+
             return response( ['message' => "Xóa Thành công"],200);
         } catch (\Throwable $th) {
             return response( ['message' => "Xóa Thất bại"],404);
