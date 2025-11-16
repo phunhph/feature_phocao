@@ -93,3 +93,53 @@ Route::prefix('backup')->group(function () {
     // ☁️ API 2: Upload bản backup từ VPS lên lại S3
     Route::post('/upload', [S3BackupController::class, 'uploadBackupToS3']);
 });
+
+
+use Illuminate\Support\Facades\Storage;
+use Google\Service\Drive\Permission;
+
+Route::get('/test-drive', function () {
+    $localPath = storage_path('app/backup_new/685e130a362ae-1750995722.jpg');
+
+    if (!file_exists($localPath)) {
+        return 'File not found!';
+    }
+
+    $fileContent = file_get_contents($localPath);
+    $googlePath = '685e130a362ae-1750995722.jpg';
+
+    // Upload file lên Google Drive
+    Storage::disk('google')->put($googlePath, $fileContent);
+
+    // Lấy adapter & Google Service từ disk
+    $adapter = Storage::disk('google')->getAdapter();
+    $service = $adapter->getService();
+
+    // Lấy folderId từ config của disk (đã extend)
+    $config = config('filesystems.disks.google');
+    $folderId = $config['folderId'] ?? 'root';
+
+    // Lấy file ID vừa upload
+    $response = $service->files->listFiles([
+        'q' => "'{$folderId}' in parents and name='{$googlePath}'",
+        'fields' => 'files(id, name)'
+    ]);
+
+    $driveFiles = $response->getFiles();
+    if (count($driveFiles) === 0) {
+        return 'File not found on Drive';
+    }
+
+    $fileId = $driveFiles[0]->getId();
+
+    // Set public permission
+    $permission = new Permission();
+    $permission->setType('anyone');
+    $permission->setRole('reader');
+    $service->permissions->create($fileId, $permission);
+
+    // URL trực tiếp để hiển thị ảnh
+    $url = "https://drive.google.com/uc?id={$fileId}";
+
+    return $url;
+});

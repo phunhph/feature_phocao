@@ -22,10 +22,22 @@ use App\Services\Modules\MSemeter\Semeter;
 use App\Models\Campus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
+use App\Services\Redis\RedisService;
 
 class PoetryController extends Controller
 {
     use TUploadImage, TResponse;
+
+    private RedisService $redis;
+
+    private int $cacheTTL = 86400;   // 24h
+    private int $lockTTL = 5;        // 5s
+    private int $maxWait = 3000;     // 3s
+    private int $step = 200;         // 0.2s
+    private string $cachePrefixAdmin = 'poetry_cache:admin:';
+    private string $lockPrefixAdmin = 'poetry_lock:admin:';
+    private string $cachePrefixClient = 'poetry_cache:client:';
+    private string $lockPrefixClient = 'poetry_lock:client:';
 
     public function __construct(
         private poetry        $poetry,
@@ -37,12 +49,42 @@ class PoetryController extends Controller
         private PoetryStudent $PoetryStudent,
     )
     {
+        $this->redis = new RedisService();
     }
 
     public function index($id, $idblock, Request $request)
     {
         $sort = $request->sort;
-        $data = $this->poetry->ListPoetry($id, $idblock, $request, $sort);
+
+        $cacheKey = $this->cachePrefixAdmin;
+        $lockKey = $this->lockPrefixAdmin;
+
+        // 1. Lấy cache trước
+        if ($cached = $this->redis->get(key: $cacheKey)) {
+            $data = $cached;
+        }
+
+        // 2. Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
+            try {
+                $data = $this->poetry->ListPoetry($id, $idblock, $request, $sort);
+
+                $this->redis->set($cacheKey, $data, $this->cacheTTL);
+            } finally {
+                $this->redis->unlock($lockKey);
+            }
+        } else {
+            // 3. Nếu lock không được, đợi cache được tạo
+            $waited = 0;
+            while ($waited < $this->maxWait) {
+                usleep($this->step * 1000);
+                $waited += $this->step;
+
+                if ($cached = $this->redis->get($cacheKey)) {
+                     $semesters = $cached;
+                }
+            }
+        }
 
         if (!empty($sort)) {
             $sort = $sort == 'asc' ? 'desc' : 'asc';
