@@ -14,6 +14,7 @@ use App\Models\examination;
 use App\Models\poetry;
 use App\Models\Question;
 use App\Models\QuestionImage;
+use App\Models\QuestionImageDriverStorage;
 use App\Models\semeter_subject;
 use App\Models\Skill;
 use App\Models\subject;
@@ -417,6 +418,255 @@ class QuestionController extends Controller
         }
     }
 
+    public function importQuestionDetailDriver($exam_id, $base_id, Request $request)
+    {
+        try {
+            $spreadsheet = IOFactory::load($request->ex_file);
+            $sheetCount = $spreadsheet->getSheetCount();
+            // Lấy ra sheet chứa câu hỏi
+            $questionsSheet = $spreadsheet->getSheet(0);
+            $questionsArr = $questionsSheet->toArray();
+
+            // Lấy ra sheet chứa ảnh
+            $imagesSheet = null;
+            if ($sheetCount > 1) {
+                $imagesSheet = $spreadsheet->getSheet(1);
+            }
+
+            $latestVersion = $this->questionRepo->getLastVersion($base_id);
+
+            $data = [];
+            $count = 0;
+            $imgCodeToQuestionId = [];
+            foreach ($questionsArr as $key => $row) {
+                if ($key == 0) continue;
+                $line = $key + 1;
+
+                if (
+                    count($data) < 1
+                    && ($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']] != null
+                        || trim($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']]) != "")
+                ) {
+                    $count = $count + 1;
+                    if ($count > 1) {
+                        $data[] = $arr;
+                    }
+
+                    $arr = [];
+
+                    $arr['imgCode'] = [];
+                    $content = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['QUESTION']]), "Thiếu câu hỏi dòng $line");
+                    $content = preg_replace("/</", "&lt;", $content);
+                    $arr['questions']['created_by'] = auth()->user()->id;
+                    $arr['questions']['content'] = $content;
+                    $arr['questions']['version'] = (float)($latestVersion->version) + 0.1;
+                    $arr['questions']['base_id'] = $base_id;
+                    $arr['imgCode'] = $this->getImgCode($arr['questions']['content'], $arr['imgCode']);
+                    $arr['questions']['type'] = $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']] == config("util.EXCEL_QESTIONS")["TYPE"] ? 0 : 1;
+                    $rank = $this->catchError($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['RANK']], "Thiếu mức độ dòng $line");
+                    $arr['questions']['rank'] = (($rank == config("util.EXCEL_QESTIONS")["RANKS"][0]) ? 0 : (($rank == config("util.EXCEL_QESTIONS")["RANKS"][1]) ? 1 : 2));
+                    $arr['skill'] = [];
+                    if (isset($row[config("util.EXCEL_QESTIONS")['KEY_COLUMNS']['SKILL']]))
+                        $arr['skill'] = explode(",", $row[config("util.EXCEL_QESTIONS")['KEY_COLUMNS']['SKILL']] ?? "");
+
+                    $answerContent = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]), "Thiếu câu trả lời dòng $line");
+                    $answerContent = preg_replace("/</", "&lt;", $answerContent);
+                    $dataA = [
+                        "content" => $answerContent,
+                        "is_correct" => $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']["IS_CORRECT"]] == config("util.EXCEL_QESTIONS")["IS_CORRECT"] ? 1 : 0,
+                    ];
+                    $arr['imgCode'] = $this->getImgCode($dataA['content'], $arr['imgCode']);
+                    $arr['answers'] = [];
+                    array_push($arr['answers'], $dataA);
+                } else {
+                    if (($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']] == null || trim($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]) == "")) continue;
+                    $answerContent = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]), "Thiếu câu trả lời dòng $line");
+                    $answerContent = preg_replace("/</", "&lt;", $answerContent);
+                    $dataA = [
+                        "content" => $answerContent,
+                        "is_correct" => $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']["IS_CORRECT"]] == config("util.EXCEL_QESTIONS")["IS_CORRECT"] ? 1 : 0,
+                    ];
+                    $arr['imgCode'] = $this->getImgCode($dataA['content'], $arr['imgCode']);
+                    array_push($arr['answers'], $dataA);
+                }
+            }
+            if (count($data) < 1) {
+                $data[] = $arr;
+            }
+            // Lấy ra các đối tượng Drawing trong sheet
+            if ($imagesSheet) {
+
+                // Chuyển sheet thành một mảng dữ liệu
+                $sheetData = $imagesSheet->toArray();
+
+                $imgCodeArr = array_reduce($data, function ($acc, $ques) {
+                    $acc = array_merge($acc, array_map(function ($imgCode) {
+                        return trim($imgCode, '[]');
+                    }, $ques['imgCode']));
+                    return $acc;
+                }, []);
+
+                $drawings = $imagesSheet->getDrawingCollection();
+                $results = [];
+                $imgArr = [];
+                $imgMemArr = [];
+                $imgErrors = [];
+                $imgErrorRow = [];
+                $drawingsArr = iterator_to_array($drawings);
+                usort($drawingsArr, function ($a, $b) {
+                    preg_match('/([A-Z]+)(\d+)/', $a->getCoordinates(), $matchesA);
+                    preg_match('/([A-Z]+)(\d+)/', $b->getCoordinates(), $matchesB);
+                
+                    $colA = $matchesA[1];
+                    $rowA = (int) $matchesA[2];
+                
+                    $colB = $matchesB[1];
+                    $rowB = (int) $matchesB[2];
+                
+                    return $rowA - $rowB;
+                });
+                
+                for ($i = 0; $i < count($drawingsArr) - 1; $i++) {
+                    $current = $drawingsArr[$i];
+                    $next = $drawingsArr[$i + 1];
+                    
+                    // Match column and row for the current and next coordinates
+                    preg_match('/([A-Z]+)(\d+)/', $current->getCoordinates(), $matchesA);
+                    preg_match('/([A-Z]+)(\d+)/', $next->getCoordinates(), $matchesB);
+                    
+                    $colA = $matchesA[1]; 
+                    $rowA = (int) $matchesA[2]; 
+                    $colB = $matchesB[1]; 
+                    $rowB = (int) $matchesB[2]; 
+                    
+                    if ($rowA == $rowB) {
+                        $imgErrorRow[] = $sheetData[$i + 1][0];
+                    }
+                }
+                               
+                
+                if (!empty($imgErrorRow) && is_array($imgErrorRow)) {
+                    $this->catchError(null, "hình ảnh ở mã: " . implode(', ', $imgErrorRow) . " Đang có nhiểu hơn một ảnh vui lòng kiểm tra lại vị trí anh liền kề");
+                }
+
+                // Duyệt qua các đối tượng Drawing
+                foreach ($drawingsArr as $index => $drawing) {
+                    // Kiểm tra xem đối tượng Drawing có phải là MemoryDrawing hay không
+                    $code = $sheetData[$index + 1][0];
+                    if ($drawing instanceof \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing) {
+                        // Lấy ảnh từ phương thức getImageResource
+                        $image = $drawing->getImageResource();
+                        // Xác định định dạng của ảnh dựa vào phương thức getMimeType
+                        switch ($drawing->getMimeType()) {
+                            case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_PNG:
+                                $format = "png";
+                                break;
+                            case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_GIF:
+                                $format = "gif";
+                                break;
+                            case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_JPEG:
+                                $format = "jpg";
+                                break;
+                        }
+                        // Tạo một tên file cho ảnh
+                        $filename = "image_question" . hash('sha512', time()) . '_' . uniqid() . "." . $format;
+                        //                    $path = "questions/" . $filename;
+                        $imgMemArr[$code] = [
+                            'path' => $filename,
+                            'image' => $image,
+                        ];
+                    } else {
+                        // Lấy ảnh từ phương thức getPath
+                        $path = $drawing->getPath();
+                        // Đọc nội dung của ảnh bằng cách sử dụng fopen và fread
+                        $file = fopen($path, "r");
+                        $content = "";
+                        while (!feof($file)) {
+                            $content .= fread($file, 1024);
+                        }
+                        // Lấy định dạng của ảnh từ phương thức getExtension
+                        $format = $drawing->getExtension();
+
+                        if ($format != 'emf') {
+                            // Tạo một tên file cho ảnh
+                            $filename = "image_question" . hash('sha512', time()) . '_' . uniqid() . "." . $format;
+                            //                    $path = "" . $filename;
+                            $imgArr[$code] = [
+                                'path' => $filename,
+                                'content' => $content
+                            ];
+                        } else {
+                            $imgErrors[] = $code;
+                        }
+                    }
+                    $results[$code] = $path;
+                }
+            }
+            if (!empty($imgErrors) && is_array($imgErrors)) {
+                $this->catchError(null, "Sai định dạng ảnh ở các mã: " . implode(', ', $imgErrors) . ". Vui lòng  chọn ảnh với định dạng \"png, jpg, gif \"");
+            }
+            if ($imagesSheet && !empty($results)) {
+                // Nếu số ảnh trong file excel < số mã ảnh thì báo lỗi
+                $imgCodeDiff = array_diff($imgCodeArr, array_keys($results));
+                if ($imgCodeDiff) {
+                    $this->catchError(null, "Thiếu ảnh ở các mã " . implode(', ', $imgCodeDiff));
+                }
+            }
+
+            foreach ($data as $arr) {
+                $this->unsetCurrentVersion($base_id);
+                $this->storeQuestionAnswer($arr, $exam_id, $imgCodeToQuestionId);
+            }
+
+            // Lấy dữ liệu để insert vào bảng question_images
+            if (!empty($imgCodeToQuestionId)) {
+                $imageQuestionArr = [];
+                foreach ($imgCodeToQuestionId as $imgCode => $questionId) {
+                    $path = $results[$imgCode];
+                    $imageQuestionArr[$imgCode] = [
+                        'path' => $path,
+                        'img_code' => $imgCode,
+                        'question_id' => $questionId,
+                    ];
+                }
+            }
+
+            if ($imagesSheet && !empty($imageQuestionArr)) {
+                // Thêm bản ghi vào bảng
+
+                // Lưu ảnh
+                if (!empty($imgArr)) {
+                    foreach ($imgArr as $imgCode => $item) {
+                        if (!empty($imageQuestionArr[$imgCode])) {
+                            $imageQuestionArr[$imgCode]['path'] = $this->uploadFileDriverStorage(file: 'abc', fileName: $item['path'], content: $item['content']);
+                        }
+                    }
+                }
+
+                // Lưu ảnh
+                if (!empty($imgMemArr)) {
+                    foreach ($imgMemArr as $item) {
+                        if (!empty($imageQuestionArr[$imgCode])) {
+                            $tempPath = sys_get_temp_dir() . $item['path'];
+                            imagepng($item['image'], $tempPath);
+                            $content = file_get_contents($tempPath);
+                            $imageQuestionArr[$imgCode]['path'] = $this->uploadFileDriverStorage(file: 'abc', fileName: $item['path'], content: $content);
+                            unlink($tempPath);
+                        }
+                    }
+                }
+                QuestionImageDriverStorage::query()->insert($imageQuestionArr);
+            }
+        } catch (\Throwable $th) {
+            return response()->json([
+                "status" => false,
+                "errors" => [
+                    "ex_file" => $th->getMessage()
+                ]
+            ], 400);
+        }
+    }
+    
     public function setCurrentVersion(Request $request)
     {
         $this->validate($request, [
@@ -782,7 +1032,8 @@ class QuestionController extends Controller
     public function importAndRunExam(ImportQuestion $request, $exam_id)
     {
         try {
-            $this->readExcel($request->ex_file, $exam_id);
+            // $this->readExcel($request->ex_file, $exam_id);
+            $this->readExcelDriver($request->ex_file, $exam_id);
             //            $import = new QuestionsImport($exam_id);
             //            Excel::import($import, $request->ex_file);
             //            dd();
@@ -1067,6 +1318,248 @@ class QuestionController extends Controller
                 }
             }
             QuestionImage::query()->insert($imageQuestionArr);
+        }
+
+        // Cập nhật số câu hỏi cho đề thi
+        $exams = Exam::query()->find($exam_id);
+        $exams->total_questions += $count;
+        $exams->save();
+    }
+
+    public function readExcelDriver($file, $exam_id)
+    {
+        $spreadsheet = IOFactory::load($file);
+        $sheetCount = $spreadsheet->getSheetCount();
+
+        // Lấy ra sheet chứa câu hỏi
+        $questionsSheet = $spreadsheet->getSheet(0);
+        $questionsArr = $questionsSheet->toArray();
+
+        // Lấy ra sheet chứa ảnh
+        $imagesSheet = null;
+        if ($sheetCount > 1) {
+            $imagesSheet = $spreadsheet->getSheet(1);
+        }
+
+        $data = [];
+        $count = 0;
+        $imgCodeToQuestionId = [];
+        foreach ($questionsArr as $key => $row) {
+            if ($key == 0) continue;
+            $line = $key + 1;
+
+            if (
+                $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']] != null
+                || trim($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']]) != ""
+            ) {
+
+                $count = $count + 1;
+                if ($count > 1) {
+                    $data[] = $arr;
+                }
+
+                $arr = [];
+
+                $arr['imgCode'] = [];
+                $content = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['QUESTION']]), "Thiếu câu hỏi dòng $line");
+                $content = preg_replace("/</", "&lt;", $content);
+                $arr['questions']['created_by'] = auth()->user()->id;
+                $arr['questions']['content'] = $content;
+                $arr['imgCode'] = $this->getImgCode($arr['questions']['content'], $arr['imgCode']);
+                $arr['questions']['type'] = $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['TYPE']] == config("util.EXCEL_QESTIONS")["TYPE"] ? 0 : 1;
+                $rank = $this->catchError($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['RANK']], "Thiếu mức độ dòng $line");
+                $arr['questions']['rank'] = (($rank == config("util.EXCEL_QESTIONS")["RANKS"][0]) ? 0 : (($rank == config("util.EXCEL_QESTIONS")["RANKS"][1]) ? 1 : 2));
+                $arr['skill'] = [];
+                if (isset($row[config("util.EXCEL_QESTIONS")['KEY_COLUMNS']['SKILL']]))
+                    $arr['skill'] = explode(",", $row[config("util.EXCEL_QESTIONS")['KEY_COLUMNS']['SKILL']] ?? "");
+
+                $answerContent = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]), "Thiếu câu trả lời dòng $line");
+                $answerContent = preg_replace("/</", "&lt;", $answerContent);
+                $dataA = [
+                    "content" => $answerContent,
+                    "is_correct" => $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']["IS_CORRECT"]] == config("util.EXCEL_QESTIONS")["IS_CORRECT"] ? 1 : 0,
+                ];
+                $arr['imgCode'] = $this->getImgCode($dataA['content'], $arr['imgCode']);
+                $arr['answers'] = [];
+                array_push($arr['answers'], $dataA);
+            } else {
+                if (($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']] == null || trim($row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]) == "")) continue;
+                $answerContent = $this->catchError(preg_replace("/>/", "&gt;", $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']['ANSWER']]), "Thiếu câu trả lời dòng $line");
+                $answerContent = preg_replace("/</", "&lt;", $answerContent);
+                $dataA = [
+                    "content" => $answerContent,
+                    "is_correct" => $row[config('util.EXCEL_QESTIONS')['KEY_COLUMNS']["IS_CORRECT"]] == config("util.EXCEL_QESTIONS")["IS_CORRECT"] ? 1 : 0,
+                ];
+                $arr['imgCode'] = $this->getImgCode($dataA['content'], $arr['imgCode']);
+                array_push($arr['answers'], $dataA);
+            }
+        }
+        $data[] = $arr;
+        // Lấy ra các đối tượng Drawing trong sheet
+        if ($imagesSheet) {
+
+            // Chuyển sheet thành một mảng dữ liệu
+            $sheetData = $imagesSheet->toArray();
+
+            $imgCodeArr = array_reduce($data, function ($acc, $ques) {
+                $acc = array_merge($acc, array_map(function ($imgCode) {
+                    return trim($imgCode, '[]');
+                }, $ques['imgCode']));
+                return $acc;
+            }, []);
+
+            $drawings = $imagesSheet->getDrawingCollection();
+            $results = [];
+            $imgArr = [];
+            $imgMemArr = [];
+            $imgErrors = [];
+            $drawingsArr = iterator_to_array($drawings);
+            usort($drawingsArr, function ($a, $b) {
+                preg_match('/([A-Z]+)(\d+)/', $a->getCoordinates(), $matchesA);
+                preg_match('/([A-Z]+)(\d+)/', $b->getCoordinates(), $matchesB);
+
+                $colA = $matchesA[1];
+                $rowA = (int) $matchesA[2];
+
+                $colB = $matchesB[1];
+                $rowB = (int) $matchesB[2];
+
+                return $rowA - $rowB;
+            });
+
+            for ($i = 0; $i < count($drawingsArr) - 1; $i++) {
+                $current = $drawingsArr[$i];
+                $next = $drawingsArr[$i + 1];
+                
+                // Match column and row for the current and next coordinates
+                preg_match('/([A-Z]+)(\d+)/', $current->getCoordinates(), $matchesA);
+                preg_match('/([A-Z]+)(\d+)/', $next->getCoordinates(), $matchesB);
+                
+                $colA = $matchesA[1]; 
+                $rowA = (int) $matchesA[2]; 
+                $colB = $matchesB[1]; 
+                $rowB = (int) $matchesB[2]; 
+                
+                if ($rowA == $rowB) {
+                    $imgErrorRow[] = $sheetData[$i + 1][0];
+                }
+            }
+                           
+            
+            if (!empty($imgErrorRow) && is_array($imgErrorRow)) {
+                $this->catchError(null, "hình ảnh ở mã: " . implode(', ', $imgErrorRow) . " Đang có nhiểu hơn một ảnh vui lòng kiểm tra lại vị trí anh liền kề");
+            }
+
+            // Duyệt qua các đối tượng Drawing
+            foreach ($drawingsArr as $index => $drawing) {
+                // Kiểm tra xem đối tượng Drawing có phải là MemoryDrawing hay không
+                $code = $sheetData[$index + 1][0] ?? null;
+                if (!$code) {
+                    continue;
+                }
+                if ($drawing instanceof \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing) {
+                    // Lấy ảnh từ phương thức getImageResource
+                    $image = $drawing->getImageResource();
+                    // Xác định định dạng của ảnh dựa vào phương thức getMimeType
+                    switch ($drawing->getMimeType()) {
+                        case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_PNG:
+                            $format = "png";
+                            break;
+                        case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_GIF:
+                            $format = "gif";
+                            break;
+                        case \PhpOffice\PhpSpreadsheet\Worksheet\MemoryDrawing::MIMETYPE_JPEG:
+                            $format = "jpg";
+                            break;
+                    }
+                    // Tạo một tên file cho ảnh
+                    $filename = "image_question" . hash('sha512', time()) . '_' . uniqid() . "." . $format;
+                    //                    $path = "questions/" . $filename;
+                    $imgMemArr[$code] = [
+                        'path' => $filename,
+                        'image' => $image,
+                    ];
+                } else {
+                    // Lấy ảnh từ phương thức getPath
+                    $path = $drawing->getPath();
+                    // Đọc nội dung của ảnh bằng cách sử dụng fopen và fread
+                    $file = fopen($path, "r");
+                    $content = "";
+                    while (!feof($file)) {
+                        $content .= fread($file, 1024);
+                    }
+                    // Lấy định dạng của ảnh từ phương thức getExtension
+                    $format = $drawing->getExtension();
+                    if ($format != 'emf') {
+                        // Tạo một tên file cho ảnh
+                        $filename = "image_question" . hash('sha512', time()) . '_' . uniqid() . "." . $format;
+                        //                    $path = "" . $filename;
+                        $imgArr[$code] = [
+                            'path' => $filename,
+                            'content' => $content
+                        ];
+                    } else {
+                        $imgErrors[] = $code;
+                    }
+                }
+                $results[$code] = $path;
+            }
+        }
+
+        if (!empty($imgErrors)) {
+            $this->catchError(null, "Sai định dạng ảnh ở các mã: " . implode(', ', $imgErrors) . ". Vui lòng  chọn ảnh với định dạng \"png, jpg, gif \"");
+        }
+
+        if ($imagesSheet && !empty($results)) {
+            // Nếu số ảnh trong file excel < số mã ảnh thì báo lỗi
+            $imgCodeDiff = array_diff($imgCodeArr, array_keys($results));
+            if ($imgCodeDiff) {
+                $this->catchError(null, "Thiếu ảnh ở các mã " . implode(', ', $imgCodeDiff));
+            }
+        }
+
+        foreach ($data as $arr) {
+            $this->storeQuestionAnswer($arr, $exam_id, $imgCodeToQuestionId);
+        }
+
+        // Lấy dữ liệu để insert vào bảng question_images
+        if (!empty($imgCodeToQuestionId)) {
+            $imageQuestionArr = [];
+            foreach ($imgCodeToQuestionId as $imgCode => $questionId) {
+                $path = $results[$imgCode];
+                $imageQuestionArr[$imgCode] = [
+                    'path' => $path,
+                    'img_code' => $imgCode,
+                    'question_id' => $questionId,
+                ];
+            }
+        }
+
+        if ($imagesSheet && !empty($imageQuestionArr)) {
+            // Thêm bản ghi vào bảng
+
+            // Lưu ảnh
+            if (!empty($imgArr)) {
+                foreach ($imgArr as $imgCode => $item) {
+                    if (!empty($imageQuestionArr[$imgCode])) {
+                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFile(file: 'abc', fileName: $item['path'], content: $item['content']);
+                    }
+                }
+            }
+
+            // Lưu ảnh
+            if (!empty($imgMemArr)) {
+                foreach ($imgMemArr as $item) {
+                    if (!empty($imageQuestionArr[$imgCode])) {
+                        $tempPath = sys_get_temp_dir() . $item['path'];
+                        imagepng($item['image'], $tempPath);
+                        $content = file_get_contents($tempPath);
+                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFile(file: 'abc', fileName: $item['path'], content: $content);
+                        unlink($tempPath);
+                    }
+                }
+            }
+            QuestionImageDriverStorage::query()->insert($imageQuestionArr);
         }
 
         // Cập nhật số câu hỏi cho đề thi

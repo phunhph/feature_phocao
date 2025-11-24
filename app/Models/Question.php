@@ -66,6 +66,10 @@ class Question extends Model
     {
         return $this->hasMany(QuestionImage::class, 'question_id');
     }
+    public function imagesDriver()
+    {
+        return $this->hasMany(QuestionImageDriverStorage::class, 'question_id');
+    }
 
     public function versions()
     {

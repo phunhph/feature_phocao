@@ -3,6 +3,7 @@
 namespace App\Exports\Sheets\QuestionDetailExport;
 
 use App\Models\QuestionImage;
+use App\Models\QuestionImageDriverStorage;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\FromQuery;
 use Maatwebsite\Excel\Concerns\ShouldAutoSize;
@@ -56,6 +57,11 @@ class ImageSheet implements WithTitle, WithHeadings, WithStyles, WithColumnWidth
     public function query()
     {
         return QuestionImage::query()->where('question_id', $this->questionId)->orderBy('id', 'asc');
+    }
+
+    public function queryDriver()
+    {
+        return QuestionImageDriverStorage::query()->where('question_id', $this->questionId)->orderBy('id', 'asc');
     }
 
     public function columnWidths(): array

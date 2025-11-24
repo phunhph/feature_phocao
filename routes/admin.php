@@ -68,7 +68,8 @@ Route::prefix('subject')->group(function () {
         Route::get('restore-delete/{id}', [QuestionController::class, 'restoreDelete'])->name('admin.subject.question.restore');
         Route::get('soft-delete', [QuestionController::class, 'softDeleteListSubject'])->name('admin.subject.question.soft.delete');
         Route::get('{id}/export', [QuestionController::class, 'exportQuestionDetail'])->name('admin.subject.question.excel.export');
-        Route::post('{exam_id}/import/{base_id}', [QuestionController::class, 'importQuestionDetail'])->name('admin.subject.question.excel.import');
+        //sRoute::post('{exam_id}/import/{base_id}', [QuestionController::class, 'importQuestionDetail'])->name('admin.subject.question.excel.import');
+        Route::post('{exam_id}/import/{base_id}', [QuestionController::class, 'importQuestionDetailDriver'])->name('admin.subject.question.excel.import');
         Route::get('{base_id}/versions', [QuestionController::class, 'versions'])->name('admin.subject.question.versions');
         Route::post('current', [QuestionController::class, 'setCurrentVersion'])->name('admin.subject.question.current');
     });
