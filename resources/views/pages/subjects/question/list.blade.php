@@ -201,7 +201,7 @@
                     @forelse ($questions as $key => $question)
                         @php
                             $token = uniqid(15);
-                            $images = $question->images->toArray();
+                            $images = $question->imagesDriver->toArray();
                         @endphp
                         <tr>
 

@@ -1542,7 +1542,7 @@ class QuestionController extends Controller
             if (!empty($imgArr)) {
                 foreach ($imgArr as $imgCode => $item) {
                     if (!empty($imageQuestionArr[$imgCode])) {
-                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFile(file: 'abc', fileName: $item['path'], content: $item['content']);
+                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFileDriverStorage(file: 'abc', fileName: $item['path'], content: $item['content']);
                     }
                 }
             }
@@ -1554,7 +1554,7 @@ class QuestionController extends Controller
                         $tempPath = sys_get_temp_dir() . $item['path'];
                         imagepng($item['image'], $tempPath);
                         $content = file_get_contents($tempPath);
-                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFile(file: 'abc', fileName: $item['path'], content: $content);
+                        $imageQuestionArr[$imgCode]['path'] = $this->uploadFileDriverStorage(file: 'abc', fileName: $item['path'], content: $content);
                         unlink($tempPath);
                     }
                 }

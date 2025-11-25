@@ -43,6 +43,8 @@ trait TUploadImage
             if (!$file && !$content) return false;
 
             $storage = Storage::disk($disk);
+
+            // Xóa file cũ nếu có
             if ($nameOld) {
                 try {
                     if ($storage->exists($nameOld)) $storage->delete($nameOld);
@@ -51,36 +53,61 @@ trait TUploadImage
                 }
             }
 
-            $nameFile = empty($fileName) ? uniqid() . '-' . time() . '.' . ($file ? $file->getClientOriginalExtension() : 'tmp') : $fileName;
+            // Tạo tên file
+            $nameFile = empty($fileName)
+                ? uniqid() . '-' . time() . '.' . ($file ? $file->getClientOriginalExtension() : 'tmp')
+                : $fileName;
+
+            // Upload file
             if (!empty($content)) {
                 $storage->put($nameFile, $content);
             } else {
                 $storage->putFileAs('', $file, $nameFile);
             }
 
-            // Try to resolve a driver-specific file id (e.g., Google Drive file id)
+            // Lấy Google Drive File ID
             try {
                 $adapter = $storage->getAdapter();
                 if (method_exists($adapter, 'getService')) {
+
                     $service = $adapter->getService();
-                    // Try to list files by the exact name we just uploaded
+
                     if (method_exists($service->files, 'listFiles')) {
-                        $resp = $service->files->listFiles(['q' => "name='{$nameFile}'", 'fields' => 'files(id,name)']);
+                        $resp = $service->files->listFiles([
+                            'q' => "name='{$nameFile}'",
+                            'fields' => 'files(id, name)'
+                        ]);
+
                         $files = $resp->getFiles();
                         if (count($files) > 0) {
-                            return $files[0]->getId();
+
+                            $fileId = $files[0]->getId();
+
+                            // ⭐⭐⭐ CẤP QUYỀN CHO FILE (Public link) ⭐⭐⭐
+                            try {
+                                $permission = new \Google\Service\Drive\Permission();
+                                $permission->setType('anyone');
+                                $permission->setRole('reader');
+                                $service->permissions->create($fileId, $permission);
+                            } catch (\Throwable $ex) {
+                                // nếu cấp quyền lỗi → bỏ qua
+                            }
+
+                            return $fileId; // return fileId thay vì tên file
                         }
                     }
                 }
             } catch (\Throwable $ex) {
-                // ignore adapter/service resolution errors and fall back to filename
+                // lỗi adapter/service → return tên file
             }
 
             return $nameFile;
+
         } catch (\Throwable $th) {
             return false;
         }
     }
+
 
     protected function saveImgBase64($param, $nameOld = null)
     {

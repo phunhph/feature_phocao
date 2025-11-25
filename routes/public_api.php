@@ -96,50 +96,77 @@ Route::prefix('backup')->group(function () {
 
 
 use Illuminate\Support\Facades\Storage;
-use Google\Service\Drive\Permission;
+use Google_Service_Drive_Permission as Permission;
+use App\Models\QuestionImageDriverStorage;
 
-Route::get('/test-drive', function () {
-    $localPath = storage_path('app/backup_new/685e130a362ae-1750995722.jpg');
+Route::get('/upload-drive/{lastId?}', function ($lastId = 0) {
+    $perPage = 10; // số file mỗi lần
 
-    if (!file_exists($localPath)) {
-        return 'File not found!';
+    // Lấy batch file theo id tăng dần
+    $images = QuestionImageDriverStorage::where('id', '>', $lastId)
+        ->orderBy('id', 'asc')
+        ->get();
+
+    if ($images->isEmpty()) {
+        return "Không còn file nào để upload!";
     }
 
-    $fileContent = file_get_contents($localPath);
-    $googlePath = '685e130a362ae-1750995722.jpg';
+    foreach ($images as $image) {
+        $fileName = $image->path; // giả sử trường đang chứa tên file là 'name'
+        $localPath = storage_path("app/backup_11_24/{$fileName}");
 
-    // Upload file lên Google Drive
-    Storage::disk('google')->put($googlePath, $fileContent);
+        if (!file_exists($localPath)) {
+            continue;
+        }
 
-    // Lấy adapter & Google Service từ disk
-    $adapter = Storage::disk('google')->getAdapter();
-    $service = $adapter->getService();
+        $fileContent = file_get_contents($localPath);
 
-    // Lấy folderId từ config của disk (đã extend)
-    $config = config('filesystems.disks.google');
-    $folderId = $config['folderId'] ?? 'root';
+        // Upload lên Google Drive
+        Storage::disk('google')->put($fileName, $fileContent);
 
-    // Lấy file ID vừa upload
-    $response = $service->files->listFiles([
-        'q' => "'{$folderId}' in parents and name='{$googlePath}'",
-        'fields' => 'files(id, name)'
-    ]);
+        // Lấy adapter & service
+        $adapter = Storage::disk('google')->getAdapter();
+        $service = $adapter->getService();
 
-    $driveFiles = $response->getFiles();
-    if (count($driveFiles) === 0) {
-        return 'File not found on Drive';
+        // Lấy folderId từ config
+        $config = config('filesystems.disks.google');
+        $folderId = $config['folderId'] ?? 'root';
+
+        // Lấy file ID vừa upload
+        $response = $service->files->listFiles([
+            'q' => "'{$folderId}' in parents and name='{$fileName}'",
+            'fields' => 'files(id, name)'
+        ]);
+
+        $driveFiles = $response->getFiles();
+        if (count($driveFiles) === 0) {
+            continue;
+        }
+
+        $fileId = $driveFiles[0]->getId();
+
+        // Set public permission
+        $permission = new Permission();
+        $permission->setType('anyone');
+        $permission->setRole('reader');
+        try {
+            $service->permissions->create($fileId, $permission);
+        } catch (\Exception $e) {
+            // bỏ qua nếu permission đã có
+        }
+
+        // Cập nhật bảng: thay tên file bằng file ID
+        $image->path = $fileId;
+        $image->save();
     }
 
-    $fileId = $driveFiles[0]->getId();
+    // Lấy id cuối cùng trong batch để dùng cho batch tiếp theo
+    $lastIdInBatch = $images->last()->id;
 
-    // Set public permission
-    $permission = new Permission();
-    $permission->setType('anyone');
-    $permission->setRole('reader');
-    $service->permissions->create($fileId, $permission);
-
-    // URL trực tiếp để hiển thị ảnh
-    $url = "https://drive.google.com/uc?id={$fileId}";
-
-    return $url;
+    return [
+        'message' => "Upload batch hoàn tất!",
+        'lastId' => $lastIdInBatch
+    ];
 });
+
+
