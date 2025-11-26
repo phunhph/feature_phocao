@@ -707,7 +707,6 @@
 
         function renderQuesAndAns(text, imageCodeArr = []) {
             const regImageCode = /\[anh\d+\]/g;
-
             let matches = text.match(regImageCode);
             let imgCodeColArr = imageCodeArr.map(item => item.img_code);
             if (matches) {
@@ -717,7 +716,14 @@
                     let key = imgCodeColArr.indexOf(imgCode);
                     if (key === -1) return;
                     let img = imageCodeArr[key];
-                    text = text.replace(item, `<div class='p-2 text-center'><img class='w-25' src='${img.path}' /></div>`);
+                    $path = img.path;
+                    console.log( $path);
+                    $path = `https://drive.google.com/thumbnail?id=${$path}`;
+                    $html = `<div class='p-2'>
+                                <img class='w-25' src='${$path}' />
+                            </div>`;
+
+                    text = text.replace(item, $html);
                 });
             }
             return text;
@@ -790,7 +796,7 @@
                                             <div class="sticky-top">
                                                 <h3 class="border-1 border-bottom border-secondary pb-2">Câu hỏi</h3>
                                                 <div class="fw-bold pt-2">
-                                                    ${renderQuesAndAns(item.content, item.images)}
+                                                    ${renderQuesAndAns(item.content, item.images_driver)}
                                                 </div>
                                             </div>
                                         </div>

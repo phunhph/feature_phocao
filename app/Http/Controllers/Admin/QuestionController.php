@@ -139,7 +139,7 @@ class QuestionController extends Controller
         $versions = Question::query()
             ->with([
                 'answers:question_id,content,is_correct',
-                'images:img_code,path,question_id',
+                'imagesDriver:img_code,path,question_id',
                 'user:name,id',
             ])
             ->select([
