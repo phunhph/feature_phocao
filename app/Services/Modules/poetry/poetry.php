@@ -380,6 +380,7 @@ class poetry implements MPoetryInterface
     public function ListPoetryApiRedis($id)
     {
         try {
+
             $records = $this->modelPoetry
                 ->query()
                 ->select([
@@ -425,7 +426,10 @@ class poetry implements MPoetryInterface
                 ->select('id', 'started_at', 'finished_at')
                 ->get();
             $data = [];
+            
+          
             $data['name_item'] = $records[0]->name_semeter;
+            
             foreach ($records as $value) {
 //                if ($value->playtopic === null) {
 //                    continue;
@@ -470,7 +474,37 @@ class poetry implements MPoetryInterface
                     'finish_time' => $finish->finished_at,
                 ];
             }
+
+            $rejoins = $this->modelPoetry
+                ->query()
+                ->select([
+                    'student_poetry.id_poetry',
+                    'student_poetry.id_student',
+                    'playtopic.rejoined_at',
+                ])
+                ->join('student_poetry', 'student_poetry.id_poetry', '=', 'poetry.id')
+                ->join('playtopic', 'playtopic.student_poetry_id', '=', 'student_poetry.id')
+                ->where([
+                    ['poetry.id_semeter', $id],
+                    ['playtopic.has_received_exam', 1],
+                    ['poetry.status', 1],
+                    ['student_poetry.status', 1],
+                    ['exam_date', date('Y-m-d')],
+                ])
+                ->orderBy('playtopic.created_at', 'DESC')
+                ->orderBy('poetry.start_examination_id', 'DESC')
+                ->get();
+               
+            foreach ($rejoins as $key => $value) {
+                $data['rejoin'][] = [
+                    "id" => $value->id_student,
+                    "id_poetry" => $value->id_poetry,
+                    "rejoined_at" =>  $rejoin,
+                ];
+            }
+                
             return $data;
+           
         } catch (\Exception $e) {
             return $e->getMessage();
         }

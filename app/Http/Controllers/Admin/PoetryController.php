@@ -171,8 +171,8 @@ class PoetryController extends Controller
     }
     public function indexApiRedis($id, $id_user,$retry = 0)
     {
-        $cacheKey = "poetry_cache:{$id}";
-        $lockKey = "poetry_lock:{$id}";
+        $cacheKey = $this->cachePrefixClient . "{$id}";
+        $lockKey = $this->lockPrefixClient . "{$id}";
         $cacheTTL = 86400; // 24 giờ
         $lockTTL = 5; // Lock Redis 5 giây
         $maxWait = 3000; // Tổng thời gian đợi: 3 giây
@@ -192,12 +192,11 @@ class PoetryController extends Controller
                         $result['data'][] = $item; // thêm phần tử này vào result
                     }
                 }
-                foreach ($result['data'] as $item) {
-                        $redisKey = "rejoin:{$item['id']}";
-                        if (Cache::has($redisKey)) {
-                            $result['rejoin'] = Cache::get($redisKey);
-                        }
-                } 
+                foreach ($data['rejoin'] as $item) {
+                    if (in_array($id_user, $userIds)) {
+                        $result['rejoin'][] = $item; // thêm phần tử này vào result
+                    }
+                }  
             return $this->responseApi(true, $result);
         }
 
@@ -219,21 +218,19 @@ class PoetryController extends Controller
                     if (in_array($id_user, $userIds)) {
                         $result['data'][] = $item; // thêm phần tử này vào result
                     }
-                }
-
+                }   
+                
+                foreach ($data['rejoin'] as $item) {
+                    if (in_array($id_user, $userIds)) {
+                        $result['rejoin'][] = $item; // thêm phần tử này vào result
+                    }
+                }  
 
                 if (!$result) {
                     return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
                 }
-
                 // ✅ Lưu cache vào Redis
                 Cache::put($cacheKey, $data, $cacheTTL);
-                foreach ($result['data'] as $item) {
-                        $redisKey = "rejoin:{$item['id']}";
-                        if (Cache::has($redisKey)) {
-                            $result['rejoin'] = Cache::get($redisKey);
-                        }
-                }  
                 return $this->responseApi(true, $result);
             } catch (\Exception $e) {
                 return $this->responseApi(false, ['error' => $e->getMessage()]);
