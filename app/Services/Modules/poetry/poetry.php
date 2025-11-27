@@ -8,6 +8,7 @@ use App\Models\poetry as modelPoetry;
 use App\Models\studentPoetry;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class poetry implements MPoetryInterface
@@ -475,10 +476,11 @@ class poetry implements MPoetryInterface
                 ];
             }
 
+            // --- Phần lưu rejoin vào Redis theo key rejoin:{poetry_id}
             $rejoins = $this->modelPoetry
                 ->query()
                 ->select([
-                    'student_poetry.id_poetry',
+                    'poetry.id',
                     'student_poetry.id_student',
                     'playtopic.rejoined_at',
                 ])
@@ -494,15 +496,31 @@ class poetry implements MPoetryInterface
                 ->orderBy('playtopic.created_at', 'DESC')
                 ->orderBy('poetry.start_examination_id', 'DESC')
                 ->get();
-               
-            foreach ($rejoins as $key => $value) {
-                $data['rejoin'][] = [
-                    "id" => $value->id_student,
-                    "id_poetry" => $value->id_poetry,
-                    "rejoined_at" =>  $rejoin,
-                ];
+
+            // Tạo rejoin array để lưu vào Redis
+            $rejoinData = [];
+            foreach ($rejoins as $value) {
+                if ($value->rejoined_at) {
+                    $rejoinData[] = [
+                        'id' => $value->id_student,
+                        'id_poetry' => $value->id,
+                        'rejoined_at' => $value->rejoined_at,
+                    ];
+                }
             }
-                
+
+            // Lưu rejoin vào Redis với key rejoin:{poetry_id}
+            if (!empty($rejoinData)) {
+                foreach ($records->pluck('id')->unique() as $poetryId) {
+                    $rejoinKey = "rejoin:{$poetryId}";
+                    // Lọc rejoin data theo poetry_id
+                    $poetryRejoinData = collect($rejoinData)->where('id_poetry', $poetryId)->values()->toArray();
+                    if (!empty($poetryRejoinData)) {
+                        Cache::put($rejoinKey, $poetryRejoinData, );
+                    }
+                }
+            }
+            
             return $data;
            
         } catch (\Exception $e) {

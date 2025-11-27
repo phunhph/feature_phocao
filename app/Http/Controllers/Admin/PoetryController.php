@@ -40,15 +40,14 @@ class PoetryController extends Controller
     private string $lockPrefixClient = 'poetry_lock:client:';
 
     public function __construct(
-        private poetry        $poetry,
-        private Semeter       $semeter,
-        private Subject       $subject,
-        private Examination   $examination,
-        private ClassSubject  $classSubject,
-        private classModel    $class,
+        private poetry $poetry,
+        private Semeter $semeter,
+        private Subject $subject,
+        private Examination $examination,
+        private ClassSubject $classSubject,
+        private classModel $class,
         private PoetryStudent $PoetryStudent,
-    )
-    {
+    ) {
         $this->redis = new RedisService();
     }
 
@@ -81,7 +80,7 @@ class PoetryController extends Controller
                 $waited += $this->step;
 
                 if ($cached = $this->redis->get($cacheKey)) {
-                     $semesters = $cached;
+                    $semesters = $cached;
                 }
             }
         }
@@ -148,9 +147,9 @@ class PoetryController extends Controller
     {
 
         $dataResult = $this->poetry->ListPoetryDetailChart($request->idcampus, $request->idsemeter, $request->idblock);
-//        $dataWithStudents = [];
+        //        $dataWithStudents = [];
 
-//        $poetryIds = array_column($dataResult, 'id_poetry');
+        //        $poetryIds = array_column($dataResult, 'id_poetry');
 //        return response()->json(['data' => $dataResult], 200);
 //        foreach ($dataResult as $value) {
 //            $studentsDetail = $this->PoetryStudent->GetStudentsDetail($value['id_poetry']);
@@ -166,10 +165,11 @@ class PoetryController extends Controller
 
     public function indexApi($id, $id_user)
     {
-        if (!($data = $this->poetry->ListPoetryApi($id, $id_user))) return $this->responseApi(false);
+        if (!($data = $this->poetry->ListPoetryApi($id, $id_user)))
+            return $this->responseApi(false);
         return $this->responseApi(true, $data);
     }
-    public function indexApiRedis($id, $id_user,$retry = 0)
+    public function indexApiRedis($id, $id_user, $retry = 0)
     {
         $cacheKey = $this->cachePrefixClient . "{$id}";
         $lockKey = $this->lockPrefixClient . "{$id}";
@@ -181,22 +181,24 @@ class PoetryController extends Controller
         // 1. Nếu đã có cache → trả luôn
         if (Cache::has($cacheKey)) {
             $data = Cache::get($cacheKey);
-           $result = [];
+            $result = [];
 
-                foreach ($data['data'] as $item) {
-                    $result['name_item'] = $data['name_item'];
-                    
-                    $userIds = explode(',', $item['user_id']); // tách thành mảng các ID
-                    
-                    if (in_array($id_user, $userIds)) {
-                        $result['data'][] = $item; // thêm phần tử này vào result
-                    }
+            foreach ($data['data'] as $item) {
+                $result['name_item'] = $data['name_item'];
+
+                $userIds = explode(',', $item['user_id']); // tách thành mảng các ID
+
+                if (in_array($id_user, $userIds)) {
+                    $result['data'][] = $item; // thêm phần tử này vào result
                 }
-                foreach ($data['rejoin'] as $item) {
-                    if (in_array($id_user, $userIds)) {
-                        $result['rejoin'][] = $item; // thêm phần tử này vào result
-                    }
-                }  
+            }
+            
+            foreach ($data['data'] as $item) {
+                $redisKey = "rejoin:{$item['id']}";
+                if (Cache::has($redisKey)) {
+                    $data['rejoin'] = Cache::get($redisKey);
+                }
+            }
             return $this->responseApi(true, $result);
         }
 
@@ -207,24 +209,25 @@ class PoetryController extends Controller
             try {
                 // ✅ Là người đầu tiên → gọi DB
                 $data = $this->poetry->ListPoetryApiRedis($id);
-                
+
                 $result = [];
 
                 foreach ($data['data'] as $item) {
                     $result['name_item'] = $data['name_item'];
-                    
+
                     $userIds = explode(',', $item['user_id']); // tách thành mảng các ID
-                    
+
                     if (in_array($id_user, $userIds)) {
                         $result['data'][] = $item; // thêm phần tử này vào result
                     }
-                }   
-                
-                foreach ($data['rejoin'] as $item) {
-                    if (in_array($id_user, $userIds)) {
-                        $result['rejoin'][] = $item; // thêm phần tử này vào result
+                }
+
+                foreach ($data['data'] as $item) {
+                    $redisKey = "rejoin:{$item['id']}";
+                    if (Cache::has($redisKey)) {
+                        $data['rejoin'] = Cache::get($redisKey);
                     }
-                }  
+                }
 
                 if (!$result) {
                     return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
@@ -251,7 +254,7 @@ class PoetryController extends Controller
                         if (Cache::has($redisKey)) {
                             $data['rejoin'] = Cache::get($redisKey);
                         }
-                    } 
+                    }
                     return $this->responseApi(true, $data);
                 }
             }
@@ -264,12 +267,13 @@ class PoetryController extends Controller
             // 🚫 Sau khi retry vẫn chưa có → trả lỗi
             return $this->responseApi(false, ['message' => 'Hệ thống đang bận, vui lòng thử lại']);
         }
-}
+    }
 
 
     public function oneindexApi($id_poetry)
     {
-        if (!($data = $this->poetry->onePoetryApi($id_poetry))) return $this->responseApi(false);
+        if (!($data = $this->poetry->onePoetryApi($id_poetry)))
+            return $this->responseApi(false);
         return $this->responseApi(true, $data);
     }
 
@@ -391,11 +395,11 @@ class PoetryController extends Controller
             ],
         ];
 
-//        DB::table('poetry')->insert($data);
+        //        DB::table('poetry')->insert($data);
 //        $id = DB::getPdo()->lastInsertId();
 //        $data['id'] = array_merge($data, $this->poetry->getItem($id));
         $poetry = \App\Models\poetry::query()->insert($data);
-//        $data = $request->all();
+        //        $data = $request->all();
         return response(['message' => "Thêm thành công", 'data' => $poetry], 200);
     }
 
