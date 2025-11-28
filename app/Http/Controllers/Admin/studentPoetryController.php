@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use App\Services\Modules\MStudentManager\PoetryStudent;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use App\Services\Modules\MExam\Exam;
 use Illuminate\Support\Str;
@@ -429,16 +430,23 @@ class studentPoetryController extends Controller
             $currentData = Cache::get($redisKey, []); // Mặc định là mảng rỗng
 
             // Kiểm tra nếu đã có id trong mảng thì không thêm
-            $alreadyExists = collect($currentData)->contains('id', $id_student);
-
-            if (!$alreadyExists) {
+            $index = collect($currentData)->search(function ($item) use ($id_student) {
+                return $item['id'] == $id_student;
+            });
+            
+            if ($index === false) {
                 $currentData[] = [
                     'id' => $id_student,
                     'id_poetry' => $poetry->id,
                     'rejoined_at' => now()->toDateTimeString(),
                 ];
-                Cache::put($redisKey, $currentData, now()->addDay()); // TTL = 1 ngày
+                
+            }else {
+                // ✔ Đã tồn tại → cập nhật thời gian rejoined_at
+                $currentData[$index]['rejoined_at'] = now()->toDateTimeString();
             }
+
+            Cache::put($redisKey, $currentData, now()->addDay()); // TTL = 1 ngày
             
             return response(['message' => "Thành công cho sinh viên thi lại"], 200);
         } catch (\Throwable $th) {

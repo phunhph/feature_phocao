@@ -192,11 +192,11 @@ class PoetryController extends Controller
                     $result['data'][] = $item; // thêm phần tử này vào result
                 }
             }
-            
+
             foreach ($data['data'] as $item) {
                 $redisKey = "rejoin:{$item['id']}";
                 if (Cache::has($redisKey)) {
-                    $data['rejoin'] = Cache::get($redisKey);
+                    $result['rejoin'] = Cache::get($redisKey);
                 }
             }
             return $this->responseApi(true, $result);
@@ -225,7 +225,7 @@ class PoetryController extends Controller
                 foreach ($data['data'] as $item) {
                     $redisKey = "rejoin:{$item['id']}";
                     if (Cache::has($redisKey)) {
-                        $data['rejoin'] = Cache::get($redisKey);
+                        $result['rejoin'] = Cache::get($redisKey);
                     }
                 }
 

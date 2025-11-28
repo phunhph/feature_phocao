@@ -500,13 +500,13 @@ class poetry implements MPoetryInterface
             // Tạo rejoin array để lưu vào Redis
             $rejoinData = [];
             foreach ($rejoins as $value) {
-                if ($value->rejoined_at) {
+                
                     $rejoinData[] = [
                         'id' => $value->id_student,
                         'id_poetry' => $value->id,
                         'rejoined_at' => $value->rejoined_at,
                     ];
-                }
+                
             }
 
             // Lưu rejoin vào Redis với key rejoin:{poetry_id}
@@ -520,7 +520,7 @@ class poetry implements MPoetryInterface
                     }
                 }
             }
-            
+
             return $data;
            
         } catch (\Exception $e) {
