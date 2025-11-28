@@ -17,7 +17,20 @@ if (!function_exists('renderQuesAndAns')) {
                 $key = array_search($imgCode, $imgCodeColArr);
                 if ($key === false) continue;
                 $img = $imageCodeArr[$key];
-                $text = str_replace($item, "<div class='p-2'><img class='w-" . $imgWidth . "' src='{$img['path']}' /></div>", $text);
+                // $text = str_replace($item, "<div class='p-2'><img class='w-" . $imgWidth . "' src='{$img['path']}' /></div>", $text);
+                $path = $img['path'];
+
+                // Nếu là Google Drive fileId ⇒ tạo URL hiển thị
+                if (strlen($path) == 33) { 
+                    // fileId của Google Drive dài 28-33 ký tự
+                    $path = "https://drive.google.com/thumbnail?id={$path}";
+                }
+
+                $html = "<div class='p-2'>
+                            <img class='w-{$imgWidth}' src='{$path}' />
+                         </div>";
+
+                $text = str_replace($item, $html, $text);
             }
         }
         return $text;

@@ -221,6 +221,26 @@ class ContestController extends Controller
         }
     }
 
+    public function storeDriver(RequestContest $request, Redirect $redirect)
+    {
+        $this->checkTypeContest();
+        $this->db::beginTransaction();
+        try {
+            $image_banner = $this->saveImgBase64DriverStorage($request->image_banner);
+            $filename = $this->uploadFileDriverStorage($request->img);
+            $contest = $this->contest->store($filename, $image_banner, $request, $request->skill ?? []);
+            $this->db::commit();
+            if ($contest->type == 1) return $redirect::route('admin.contest.show.capatity', ['id' => $contest->id])->withErrors('success', 'Thêm mới thành công !');
+            return $redirect::route('admin.contest.show', ['id' => $contest->id])->withErrors('success', 'Thêm mới thành công !');
+        } catch (Exception $ex) {
+            if ($request->hasFile('img')) {
+                if ($this->storage::disk('s3')->has($filename)) $this->storage::disk('s3')->delete($filename);
+            }
+            $this->db::rollBack();
+            return $redirect::back()->withErrors(['error' => 'Thêm mới thất bại !']);
+        }
+    }
+
     public function destroy($id)
     {
         try {
@@ -286,6 +306,52 @@ class ContestController extends Controller
                     $image_banner = $contest->image_banner;
                 } else {
                     $image_banner = $this->saveImgBase64($request->image_banner, $contest->image_banner);
+                }
+                $dataSave['image_banner'] = $image_banner;
+                $this->contest->update($contest, $dataSave, $request->skill ?? []);
+                $this->db::commit();
+                if ($contest->type == 1) return redirect(route('admin.contest.show.capatity', ['id' => $contest->id]))->withErrors('success', 'Cập nhật thành công !');
+                return redirect(route('admin.contest.list') . '?type=' . request('type') ?? 0)->withErrors('success', 'Cập nhật thành công !');
+            }
+        } catch (\Exception $e) {
+            $this->db::rollBack();
+            return redirect()->back()->withErrors(['error' => 'Cập nhật thất bại !']);
+        }
+    }
+
+    public function updateDriver(RequestContest $request, $id)
+    {
+        $this->checkTypeContest();
+        $this->db::beginTransaction();
+        $contest = $this->contest->find($id);
+        try {
+            if (is_null($contest)) {
+                return redirect(route('admin.contest.list') . '?type=' . request('type') ?? 0);
+            } else {
+                $rewardRankPoint = json_encode(array(
+                    'top1' => $request->top1,
+                    'top2' => $request->top2,
+                    'top3' => $request->top3,
+                    'leave' => $request->leave,
+                ));
+
+                if ($request->has('img')) {
+                    $img = $this->uploadFileDriverStorage($request->file('img'), $contest->img);
+                    if (!$img) return redirect()->back()->with('error', 'Cập nhật thất bại !');
+                    $dataSave = array_merge($request->except(['_method', '_token', 'img']), [
+                        'reward_rank_point' => $rewardRankPoint,
+                        'img' => $img
+                    ]);
+                } else {
+                    $dataSave = array_merge($request->except(['_method', '_token']), [
+                        'reward_rank_point' => $rewardRankPoint,
+                    ]);
+                }
+                if ($contest->date_start < now()) unset($dataSave['date_start']);
+                if ($request->image_banner == null) {
+                    $image_banner = $contest->image_banner;
+                } else {
+                    $image_banner = $this->saveImgBase64DriverStorage($request->image_banner, $contest->image_banner);
                 }
                 $dataSave['image_banner'] = $image_banner;
                 $this->contest->update($contest, $dataSave, $request->skill ?? []);

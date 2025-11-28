@@ -23,7 +23,8 @@ class QuestionDetailExport implements WithMultipleSheets
     )
     {
         $this->questionId = $questionId;
-        $this->question = Question::query()->with(['answers', 'images'])->where('id', $questionId);
+        // $this->question = Question::query()->with(['answers', 'images'])->where('id', $questionId);
+        $this->question = Question::query()->with(['answers', 'imagesDriver'])->where('id', $questionId);
     }
 
     public function sheets(): array

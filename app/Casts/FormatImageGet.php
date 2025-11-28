@@ -12,15 +12,28 @@ class FormatImageGet implements CastsAttributes
         "admin.exam.index"
     ];
 
+    // public function get($model, string $key, $value, array $attributes)
+    // {
+    //     if ($this->__checkRoute()) return $value;
+
+    //        if (Storage::disk('s3')->has($value ?? "abc.jpg")) return Storage::disk('s3')->temporaryUrl($value, now()->addDays(7));
+    //     // if (Storage::disk('s3')->has($value ?? "abc.jpg")) return Storage::disk('s3')->temporaryUrl($value, now()->addMinutes(60));
+    //     return ($model->getTable() == 'users') ? $value : $value;
+    // }
     public function get($model, string $key, $value, array $attributes)
     {
         if ($this->__checkRoute()) return $value;
 
-          if (Storage::disk('s3')->has($value ?? "abc.jpg")) return Storage::disk('s3')->temporaryUrl($value, now()->addDays(7));
-        // if (Storage::disk('s3')->has($value ?? "abc.jpg")) return Storage::disk('s3')->temporaryUrl($value, now()->addMinutes(60));
+        // Dùng driver mặc định thay vì s3
+        $disk = Storage::disk(config('filesystems.default')); 
+
+        if ($disk->exists($value ?? "abc.jpg")) {
+            return $disk->temporaryUrl($value, now()->addDays(7));
+        }
+
+        // Nếu bảng là users thì trả value bình thường
         return ($model->getTable() == 'users') ? $value : $value;
     }
-
     private function __checkRoute()
     {
         if (request()->route()) {

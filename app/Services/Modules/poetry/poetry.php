@@ -8,6 +8,7 @@ use App\Models\poetry as modelPoetry;
 use App\Models\studentPoetry;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class poetry implements MPoetryInterface
@@ -380,6 +381,7 @@ class poetry implements MPoetryInterface
     public function ListPoetryApiRedis($id)
     {
         try {
+
             $records = $this->modelPoetry
                 ->query()
                 ->select([
@@ -425,7 +427,10 @@ class poetry implements MPoetryInterface
                 ->select('id', 'started_at', 'finished_at')
                 ->get();
             $data = [];
+            
+          
             $data['name_item'] = $records[0]->name_semeter;
+            
             foreach ($records as $value) {
 //                if ($value->playtopic === null) {
 //                    continue;
@@ -470,7 +475,54 @@ class poetry implements MPoetryInterface
                     'finish_time' => $finish->finished_at,
                 ];
             }
+
+            // --- Phần lưu rejoin vào Redis theo key rejoin:{poetry_id}
+            $rejoins = $this->modelPoetry
+                ->query()
+                ->select([
+                    'poetry.id',
+                    'student_poetry.id_student',
+                    'playtopic.rejoined_at',
+                ])
+                ->join('student_poetry', 'student_poetry.id_poetry', '=', 'poetry.id')
+                ->join('playtopic', 'playtopic.student_poetry_id', '=', 'student_poetry.id')
+                ->where([
+                    ['poetry.id_semeter', $id],
+                    ['playtopic.has_received_exam', 1],
+                    ['poetry.status', 1],
+                    ['student_poetry.status', 1],
+                    ['exam_date', date('Y-m-d')],
+                ])
+                ->orderBy('playtopic.created_at', 'DESC')
+                ->orderBy('poetry.start_examination_id', 'DESC')
+                ->get();
+
+            // Tạo rejoin array để lưu vào Redis
+            $rejoinData = [];
+            foreach ($rejoins as $value) {
+                
+                    $rejoinData[] = [
+                        'id' => $value->id_student,
+                        'id_poetry' => $value->id,
+                        'rejoined_at' => $value->rejoined_at,
+                    ];
+                
+            }
+
+            // Lưu rejoin vào Redis với key rejoin:{poetry_id}
+            if (!empty($rejoinData)) {
+                foreach ($records->pluck('id')->unique() as $poetryId) {
+                    $rejoinKey = "rejoin:{$poetryId}";
+                    // Lọc rejoin data theo poetry_id
+                    $poetryRejoinData = collect($rejoinData)->where('id_poetry', $poetryId)->values()->toArray();
+                    if (!empty($poetryRejoinData)) {
+                        Cache::put($rejoinKey, $poetryRejoinData, );
+                    }
+                }
+            }
+
             return $data;
+           
         } catch (\Exception $e) {
             return $e->getMessage();
         }

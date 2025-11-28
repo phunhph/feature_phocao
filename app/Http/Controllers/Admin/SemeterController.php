@@ -62,10 +62,6 @@ class SemeterController extends Controller
             try {
                 $semesters = $this->semeter->GetSemeter();
 
-                if (!$semesters) {
-                    return $this->responseApi(false, ['message' => 'Không có dữ liệu']);
-                }
-
                 $this->redis->set($cacheKey, $semesters, $this->cacheTTL);
             } finally {
                 $this->redis->unlock($lockKey);

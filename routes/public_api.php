@@ -93,3 +93,80 @@ Route::prefix('backup')->group(function () {
     // ☁️ API 2: Upload bản backup từ VPS lên lại S3
     Route::post('/upload', [S3BackupController::class, 'uploadBackupToS3']);
 });
+
+
+use Illuminate\Support\Facades\Storage;
+use Google_Service_Drive_Permission as Permission;
+use App\Models\QuestionImageDriverStorage;
+
+Route::get('/upload-drive/{lastId?}', function ($lastId = 0) {
+    $perPage = 10; // số file mỗi lần
+
+    // Lấy batch file theo id tăng dần
+    $images = QuestionImageDriverStorage::where('id', '>', $lastId)
+        ->orderBy('id', 'asc')
+        ->get();
+
+    if ($images->isEmpty()) {
+        return "Không còn file nào để upload!";
+    }
+
+    foreach ($images as $image) {
+        $fileName = $image->path; // giả sử trường đang chứa tên file là 'name'
+        $localPath = storage_path("app/backup_11_24/{$fileName}");
+
+        if (!file_exists($localPath)) {
+            continue;
+        }
+
+        $fileContent = file_get_contents($localPath);
+
+        // Upload lên Google Drive
+        Storage::disk('google')->put($fileName, $fileContent);
+
+        // Lấy adapter & service
+        $adapter = Storage::disk('google')->getAdapter();
+        $service = $adapter->getService();
+
+        // Lấy folderId từ config
+        $config = config('filesystems.disks.google');
+        $folderId = $config['folderId'] ?? 'root';
+
+        // Lấy file ID vừa upload
+        $response = $service->files->listFiles([
+            'q' => "'{$folderId}' in parents and name='{$fileName}'",
+            'fields' => 'files(id, name)'
+        ]);
+
+        $driveFiles = $response->getFiles();
+        if (count($driveFiles) === 0) {
+            continue;
+        }
+
+        $fileId = $driveFiles[0]->getId();
+
+        // Set public permission
+        $permission = new Permission();
+        $permission->setType('anyone');
+        $permission->setRole('reader');
+        try {
+            $service->permissions->create($fileId, $permission);
+        } catch (\Exception $e) {
+            // bỏ qua nếu permission đã có
+        }
+
+        // Cập nhật bảng: thay tên file bằng file ID
+        $image->path = $fileId;
+        $image->save();
+    }
+
+    // Lấy id cuối cùng trong batch để dùng cho batch tiếp theo
+    $lastIdInBatch = $images->last()->id;
+
+    return [
+        'message' => "Upload batch hoàn tất!",
+        'lastId' => $lastIdInBatch
+    ];
+});
+
+
