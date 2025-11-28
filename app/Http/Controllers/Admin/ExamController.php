@@ -19,10 +19,19 @@ use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\Validator;
 use App\Services\Modules\MCampus\Campus;
 use App\Models\subject;
+use App\Services\Redis\RedisService;
 
 class ExamController extends Controller
 {
     use TUploadImage, TResponse;
+
+    private RedisService $redis;
+    private int $cacheTTL = 3600;      // 1 hour
+    private int $lockTTL = 5;          // 5s
+    private int $maxWait = 3000;       // 3s
+    private int $step = 200;           // 0.2s
+    private string $cachePrefixAdmin = 'exam_cache:admin:';
+    private string $lockPrefixAdmin = 'exam_lock:admin:';
 
     public function __construct(
         private MExamInterface  $repoExam,
@@ -36,6 +45,7 @@ class ExamController extends Controller
         private subject $subject
     )
     {
+        $this->redis = new \App\Services\Redis\RedisService();
     }
 
     public function getHistory($id)
@@ -74,6 +84,11 @@ class ExamController extends Controller
         $exam = $this->exam::whereId($id)->withCount('resultCapacity')->first();
         if ($exam->resultCapacity_count > 0) throw new \Exception("Không thể cập nhật trạng thái !");
         $exam->update(['status' => $status]);
+
+        // Reset cache
+        $subjectId = $exam->subject_id;
+        $this->redis->delPattern($this->cachePrefixAdmin . $subjectId . ':page:');
+
         return $exam;
     }
 
@@ -92,13 +107,56 @@ class ExamController extends Controller
 
     public function index($id_subject)
     {
-//        $exams = $this->examModel->find(11);
-//        $exam = $this->examModel->whereGet(['id' => 18])->pluck('id');
-////        $exam = $this->examModel->whereGet(['id' => 18])->pluck('id');
-//        dd($exam);
-        $exams = $this->exam::where('subject_id', $id_subject)->orderByDesc('id')->get();
-//        dd($exams[1]->campus->name);
-        $nameSubject = $this->subject::find($id_subject);
+        $page = request('page', 1);
+        $cacheKey = $this->cachePrefixAdmin . $id_subject . ':page:' . $page;
+        $lockKey = $this->lockPrefixAdmin . $id_subject;
+
+        $exams = null;
+
+        // 1. Lấy cache trước
+        if ($cached = $this->redis->get(key: $cacheKey)) {
+            $exams = $cached;
+        }
+
+        // 2. Cố gắng lock để tránh race condition
+        if ($this->redis->lock($lockKey, $this->lockTTL)) {
+            try {
+                $exams = $this->exam::where('subject_id', $id_subject)
+                    ->with('campus:id,name')
+                    ->orderByDesc('id')
+                    ->paginate(5);
+
+                $this->redis->set($cacheKey, $exams, $this->cacheTTL);
+            } finally {
+                $this->redis->unlock($lockKey);
+            }
+        } else {
+            // 3. Nếu lock không được, đợi cache được tạo
+            $waited = 0;
+            while ($waited < $this->maxWait) {
+                usleep($this->step * 1000);
+                $waited += $this->step;
+
+                if ($cached = $this->redis->get($cacheKey)) {
+                    $exams = $cached;
+                    break;
+                }
+            }
+        }
+
+        // Fallback nếu vẫn không có data (tránh lỗi view)
+        if (!$exams) {
+             $exams = $this->exam::where('subject_id', $id_subject)
+                    ->with('campus:id,name')
+                    ->orderByDesc('id')
+                    ->paginate(5);
+        }
+
+        // Cache subject name (ít thay đổi hơn)
+        $nameSubject = \Illuminate\Support\Facades\Cache::remember("subject_cache:detail:{$id_subject}", 86400, function() use ($id_subject) {
+            return $this->subject::select('id', 'name')->find($id_subject);
+        });
+
         return view(
             'pages.subjects.exam_subject.index',
             [
@@ -189,8 +247,6 @@ class ExamController extends Controller
     public function store(ExamNewRequest $request)
     {
         try {
-//            dd($request->all());
-
              $dataMer = [
                  'name' => $request->name,
                  'description' =>  $request->description,
@@ -205,16 +261,13 @@ class ExamController extends Controller
 
             ];
 
-            // $filename = $this->uploadFile($request->external_url);
-//            $dataCreate = array_merge($request->only([
-//                'name',
-//                'description',
-//                'campus_exam'
-//            ]), $dataMer);
             $this->exam::create($dataMer);
+            
+            // Reset cache pattern
+            $this->redis->delPattern($this->cachePrefixAdmin . $request->id . ':page:');
+
             return redirect()->route('admin.exam.index', $request->id);
         } catch (\Throwable $th) {
-//            Log::info($th->getMessage());
             return $th;
         }
     }
@@ -225,7 +278,13 @@ class ExamController extends Controller
     {
         try {
             $exam = $this->exam::find($id);
+            $subjectId = $exam->subject_id;
+
             $exam->delete($id);
+
+            // Reset cache
+            $this->redis->delPattern($this->cachePrefixAdmin . $subjectId . ':page:');
+
             return redirect()->back();
         } catch (\Throwable $th) {
             return abort(404);
@@ -292,6 +351,11 @@ class ExamController extends Controller
             $examModel->ponit = $request->ponit;
             $examModel->round_id = $id_round;
             $examModel->save();
+            
+            // Reset cache vì đã update exam
+            $subjectId = $examModel->subject_id;
+            $this->redis->delPattern($this->cachePrefixAdmin . $subjectId . ':page:');
+            
             $this->db::commit();
             if ($round->contest->type == 1) return Redirect::route('admin.contest.show.capatity', ['id' => $round->contest->id]);
             return Redirect::route('admin.exam.index', ['id' => $id_round]);

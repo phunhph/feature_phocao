@@ -22,9 +22,19 @@ use Illuminate\Support\Facades\Validator;
 use App\Models\block;
 use App\Models\blockSubject;
 
+use App\Services\Redis\RedisService;
+
 class subjectController extends Controller
 {
     use TUploadImage, TResponse, TTeamContest, TStatus;
+
+    private RedisService $redis;
+    private int $cacheTTL = 3600;      // 1 hour
+    private int $lockTTL = 5;          // 5s
+    private int $maxWait = 3000;       // 3s
+    private int $step = 200;           // 0.2s
+    private string $cachePrefixAdmin = 'subject_cache:admin:';
+    private string $lockPrefixAdmin = 'subject_lock:admin:';
 
     public function __construct(
         private MContestInterface     $contest,
@@ -41,6 +51,7 @@ class subjectController extends Controller
         private MContestUserInterface $contestUser,
     )
     {
+        $this->redis = new RedisService();
     }
 
     public function apiIndex()
@@ -156,6 +167,10 @@ class subjectController extends Controller
         $id = DB::getPdo()->lastInsertId();
         $data = $request->all();
         $data['id'] = $id;
+
+        // Reset cache (clear all pages)
+        $this->redis->delPattern($this->cachePrefixAdmin);
+
         return response(['message' => "Thêm thành công", 'data' => $data], 200);
     }
 
@@ -207,6 +222,9 @@ class subjectController extends Controller
         $data = $this->subject->getItemSubject($request->subject_id);
         $this->subject->createSubjectSemater($request->subject_id, $request->id_semeter);
 
+        // Reset cache vì đã thêm subject vào semester
+        $this->redis->delPattern($this->cachePrefixAdmin);
+
         return response(['message' => "Thêm thành công",], 200);
     }
 
@@ -250,13 +268,77 @@ class subjectController extends Controller
         $campus->save();
         $data = $request->all();
         $data['id'] = $id;
+
+        // Reset cache
+        $this->redis->delPattern($this->cachePrefixAdmin);
+
         return response(['message' => "Cập nhật thành công", 'data' => $data], 200);
     }
 
     public function index()
     {
         $this->checkTypeContest();
-        if (!($data = $this->subject->ListSubject())) return abort(404);
+
+        $page = request('page', 1);
+        $search = request('s', '');
+        $searchType = request('t', 'code');
+
+        // Chỉ cache khi KHÔNG có search
+        if (empty($search)) {
+            $cacheKey = $this->cachePrefixAdmin . 'page:' . $page;
+            $lockKey = $this->lockPrefixAdmin;
+
+            $data = null;
+
+            // 1. Lấy cache trước
+            if ($cached = $this->redis->get(key: $cacheKey)) {
+                $data = $cached;
+            }
+
+            // 2. Cố gắng lock
+            if ($this->redis->lock($lockKey, $this->lockTTL)) {
+                try {
+                    $data = DB::table('subject')
+                        ->select('id', 'name', 'code_subject', 'status', 'created_at')
+                        ->orderByDesc('id')
+                        ->paginate(20);
+
+                    $this->redis->set($cacheKey, $data, $this->cacheTTL);
+                } finally {
+                    $this->redis->unlock($lockKey);
+                }
+            } else {
+                // 3. Đợi cache
+                $waited = 0;
+                while ($waited < $this->maxWait) {
+                    usleep($this->step * 1000);
+                    $waited += $this->step;
+
+                    if ($cached = $this->redis->get($cacheKey)) {
+                        $data = $cached;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback
+            if (!$data) {
+                $data = $this->subject->ListSubject();
+            }
+        } else {
+            // Có search → Query trực tiếp, KHÔNG cache
+            $query = DB::table('subject')
+                ->select('id', 'name', 'code_subject', 'status', 'created_at');
+
+            if ($searchType == 'code') {
+                $query->where('code_subject', 'LIKE', "%{$search}%");
+            } else {
+                $query->where('name', 'LIKE', "%{$search}%");
+            }
+
+            $data = $query->orderByDesc('id')->paginate(20);
+        }
+
         return view('pages.subjects.index', [
             'subjects' => $data
         ]);
@@ -272,6 +354,10 @@ class subjectController extends Controller
         $campus->save();
         $data = $request->all();
         $data['id'] = $id;
+
+        // Reset cache
+        $this->redis->delPattern($this->cachePrefixAdmin);
+
         return response(['message' => "Cập nhật trạng thái thành công", 'data' => $data], 200);
     }
 
@@ -282,6 +368,10 @@ class subjectController extends Controller
             $this->subject->updateStatusSemeter($id, $request->status);
             $data = $request->all();
             $data['id'] = $id;
+            
+            // Reset cache
+            $this->redis->delPattern($this->cachePrefixAdmin);
+            
             return response(['message' => "Cập nhật trạng thái thành công", 'data' => $data], 200);
         } catch (\Throwable $th) {
             return response(['message' => $th], 404);
@@ -292,6 +382,10 @@ class subjectController extends Controller
     {
         try {
             $this->subject->getItemSubject($id)->delete();
+
+            // Reset cache
+            $this->redis->delPattern($this->cachePrefixAdmin);
+
             return response(['message' => "Xóa Thành công"], 200);
         } catch (\Throwable $th) {
             return response(['message' => "Xóa Thất bại"], 404);
@@ -302,6 +396,10 @@ class subjectController extends Controller
     {
         try {
             $this->subject->removeSubjectSemater($id_subject, $id_semeter);
+            
+            // Reset cache
+            $this->redis->delPattern($this->cachePrefixAdmin);
+            
             return response(['message' => "Xóa Thành công"], 200);
         } catch (\Throwable $th) {
             return response(['message' => "Xóa Thất bại vui lòng liên hệ bộ phận kỹ thuật"], 404);

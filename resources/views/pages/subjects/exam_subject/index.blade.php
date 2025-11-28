@@ -234,6 +234,11 @@
                         @endforeach
                         </tbody>
                     </table>
+                    @if($exams->hasPages())
+                        <div class="mt-4">
+                            {{ $exams->links('pagination::bootstrap-4') }}
+                        </div>
+                    @endif
                 </div>
             </div>
 

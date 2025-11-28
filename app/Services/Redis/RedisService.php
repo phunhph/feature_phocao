@@ -58,4 +58,37 @@ class RedisService
         Redis::del($key);
     }
 
+    /**
+     * Xóa cache theo pattern (dùng cho pagination)
+     * Production-safe: Dùng SCAN thay vì KEYS để tránh block Redis
+     * @param string $pattern
+     */
+    public function delPattern(string $pattern)
+    {
+        $cursor = '0';
+        $matchPattern = '*' . $pattern . '*';
+        
+        do {
+            // SCAN không block Redis, xử lý từng batch nhỏ
+            $result = Redis::scan($cursor, ['match' => $matchPattern, 'count' => 100]);
+            
+            // Nếu tìm thấy keys, xóa ngay
+            if ($result !== false && is_array($result) && count($result) > 1) {
+                $cursor = $result[0]; // Cursor cho lần scan tiếp theo
+                $keys = $result[1];   // Keys tìm được
+                
+                if (!empty($keys)) {
+                    Redis::del($keys);
+                }
+            } else {
+                // Fallback về KEYS nếu SCAN không hoạt động (môi trường dev)
+                $keys = Redis::keys($matchPattern);
+                if (!empty($keys)) {
+                    Redis::del($keys);
+                }
+                break;
+            }
+        } while ($cursor !== '0');
+    }
+
 }
